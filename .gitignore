@@ -1,0 +1,25 @@
+# Виртуальное окружение
+venv/
+env/
+.venv/
+
+# База данных и данные
+data/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Секреты
+config_local.py
+.env

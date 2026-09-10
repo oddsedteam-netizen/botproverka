@@ -1,8 +1,9 @@
+import html
 import json
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
-    Message, CallbackQuery,
+    Message, CallbackQuery, ChatMemberUpdated,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
@@ -41,8 +42,9 @@ class LinkBotState(StatesGroup):
 def main_user_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📝 Подать заявление"), KeyboardButton(text="🎫 Создать тикет")],
+            [KeyboardButton(text="📝 Подать заявление"), KeyboardButton(text="🎫 Тикеты")],
             [KeyboardButton(text="👨‍💼 Связаться с админом"), KeyboardButton(text="👤 Профиль")],
+            [KeyboardButton(text="🏆 Топы")],
         ],
         resize_keyboard=True,
         is_persistent=True
@@ -94,13 +96,30 @@ def review_keyboard(request_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def profile_keyboard(has_bot: bool) -> InlineKeyboardMarkup:
+def profile_keyboard(is_verified: bool = False, is_checkup_mod: bool = False) -> InlineKeyboardMarkup:
     buttons = []
-    if has_bot:
-        buttons.append([InlineKeyboardButton(text="🔄 Сменить привязанного бота", callback_data="profile_link_bot")])
-        buttons.append([InlineKeyboardButton(text="🚀 Запросить проверку бота", callback_data="profile_quick_verify")])
+    # Модератор check-up действует от лица бота check-up — верификация ему не нужна
+    if is_checkup_mod:
+        buttons.append([InlineKeyboardButton(text="📤 Добавить проверку", callback_data="profile_post_checkup")])
+    # Верификация / выложить проверку (для обычных проверяющих)
+    elif is_verified:
+        buttons.append([InlineKeyboardButton(text="📤 Выложить проверку", callback_data="profile_post_check")])
     else:
-        buttons.append([InlineKeyboardButton(text="🔗 Привязать бота", callback_data="profile_link_bot")])
+        buttons.append([InlineKeyboardButton(text="🔍 Верификация", callback_data="profile_verify")])
+
+    # Управление ТГК — только для верифицированных проверяющих
+    if is_verified and not is_checkup_mod:
+        buttons.append([
+            InlineKeyboardButton(text="🔁 Сменить ТГК", callback_data="profile_change_tgk"),
+            InlineKeyboardButton(text="➕ Добавить ТГК", callback_data="profile_add_tgk"),
+        ])
+
+    # Модератор может снять с себя полномочия, обычный пользователь — подать анкету
+    if is_checkup_mod:
+        buttons.append([InlineKeyboardButton(text="🛡️ Снять полномочия", callback_data="profile_unmod")])
+    else:
+        buttons.append([InlineKeyboardButton(text="📋 Анкета", callback_data="profile_anketa")])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -217,7 +236,7 @@ async def cmd_start(message: Message, state: FSMContext):
             "👋 <b>Добро пожаловать!</b>\n\n"
             "Это бот проверки. Здесь вы можете:\n"
             "• 📝 Подать заявление на проверку бота\n"
-            "• 🎫 Создать тикет на пересмотр оценки\n"
+            "• 🎫 Тикеты\n"
             "• 👨‍💼 Связаться с админом\n"
             "• 👤 Посмотреть свой профиль\n\n"
             "<i>Текст приветствия — заглушка. Настраивается в редакторе.</i>"
@@ -252,10 +271,6 @@ async def show_profile(message: Message, state: FSMContext):
 
 async def send_profile(message_or_callback, user: dict, edit: bool = False):
     """Универсальная функция отправки профиля"""
-    linked_bot = user.get('linked_bot', '') or ''
-    has_bot = bool(linked_bot)
-    bot_display = linked_bot if has_bot else "<i>не привязан</i>"
-
     import aiosqlite
     from database.db import DB_PATH
 
@@ -305,13 +320,67 @@ async def send_profile(message_or_callback, user: dict, edit: bool = False):
     username_display = f"@{user['username']}" if user['username'] else "не указан"
     name = f"{user['first_name']} {user['last_name']}".strip() or "Не указано"
 
+    # Плашки ролей
+    u = user
+
+    # Отдельная выделяющаяся плашка модератора check-up
+    mod_banner = ""
+    if u.get('checkup_mod'):
+        mod_banner = (
+            "\n🛡️━━━━━━━━━━━━━━━━━━━━🛡️\n"
+            "   ⭐ МОДЕРАТОР CHECK-UP ⭐\n"
+            "   Проверки действуют от лица бота check-up\n"
+            "   и публикуются в топ «Проверки check-up» 🔍\n"
+            "🛡️━━━━━━━━━━━━━━━━━━━━🛡️\n"
+        )
+
+    badges = []
+    if u.get('is_verified'):
+        badges.append("🔍 Верифицирован ✓")
+    badge_text = "\n".join(f"   {b}" for b in badges)
+    if badge_text:
+        badge_text = f"\n{badge_text}\n"
+
+    # ТГК проверяющего: верифицированный + все привязанные (бот добавлен в каналы)
+    verified_tgk = None
+    bindings = []
+    if u.get('is_verified'):
+        verified_tgk = await db.get_user_tgk_check(user['user_id'])
+        bindings = await db.get_all_user_tgk_bindings(user['user_id'])
+
+    tgk_section = ""
+    if verified_tgk and verified_tgk.get('tgk_link'):
+        v_link = html.escape(str(verified_tgk['tgk_link']))
+        v_name = html.escape(str(verified_tgk.get('tgk_name') or verified_tgk['tgk_link']))
+        tgk_lines = [f"   🔒 <a href=\"{v_link}\">{v_name}</a> — верифицирован"]
+        seen = {str(verified_tgk['tgk_link']).rstrip('/').lower()}
+        for b in bindings:
+            uname = (b.get('username') or '').strip().lstrip('@')
+            b_link_rel = ""
+            if uname:
+                b_link_rel = uname.lower()
+            elif b.get('chat_title'):
+                b_link_rel = str(b['chat_title']).strip()
+            if b_link_rel in seen:
+                continue
+            seen.add(b_link_rel)
+            b_link = f"https://t.me/{html.escape(uname)}" if uname else ''
+            b_title = html.escape(str(b.get('chat_title') or uname or '—'))
+            if b_link:
+                tgk_lines.append(f"   · <a href=\"{b_link}\">{b_title}</a>")
+            else:
+                tgk_lines.append(f"   · {b_title}")
+        tgk_section = "📢 <b>ТГК проверяющего:</b>\n" + "\n".join(tgk_lines) + "\n\n"
+
     text = (
         f"👤 <b>Ваш профиль</b>\n"
         f"{'━' * 28}\n\n"
         f"🆔 <b>ID:</b> <code>{user['user_id']}</code>\n"
         f"👤 <b>Имя:</b> {name}\n"
-        f"📛 <b>Username:</b> {username_display}\n\n"
-        f"🤖 <b>Привязанный бот:</b> {bot_display}\n\n"
+        f"📛 <b>Username:</b> {username_display}\n"
+        f"{mod_banner}"
+        f"{badge_text}"
+        f"{tgk_section}"
         f"📝 <b>Заявления на проверку:</b>\n"
         f"   Всего: {total_requests}\n"
         f"   ⏳ Ожидают: {pending_requests}\n"
@@ -325,7 +394,7 @@ async def send_profile(message_or_callback, user: dict, edit: bool = False):
         f"📅 <b>Дата регистрации:</b> {user['join_date'][:10] if user['join_date'] else '—'}\n"
     )
 
-    kb = profile_keyboard(has_bot)
+    kb = profile_keyboard(is_verified=bool(user.get('is_verified')), is_checkup_mod=bool(user.get('checkup_mod')))
 
     if edit and hasattr(message_or_callback, 'edit_text'):
         await message_or_callback.edit_text(text, reply_markup=kb)
@@ -589,35 +658,177 @@ async def create_bridge_topic(bot: Bot, user, topic_name: str, topic_type: str, 
         return None
 
 
-# ==================== ТИКЕТ ====================
+# ==================== ТИКЕТЫ ====================
 
-@router.message(F.text == "🎫 Создать тикет", F.chat.type == ChatType.PRIVATE)
-async def create_ticket(message: Message, bot: Bot, state: FSMContext):
+def tickets_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎫 Мои тикеты", callback_data="tickets_mine")],
+        [InlineKeyboardButton(text="➕ Открыть тикет", callback_data="tickets_open")],
+    ])
+
+
+@router.message(F.text == "🎫 Тикеты", F.chat.type == ChatType.PRIVATE)
+async def tickets_menu(message: Message, state: FSMContext):
     if not await check_access(message):
         return
     await state.clear()
+    await message.answer(
+        "🎫 <b>Тикеты</b>\n"
+        f"{'━' * 28}\n\n"
+        "Что именно вы хотите открыть?",
+        reply_markup=tickets_menu_kb()
+    )
 
-    existing = await db.get_user_open_topic(message.from_user.id, "ticket")
+
+@router.callback_query(F.data == "tickets_open")
+async def tickets_open(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    await state.clear()
+    existing = await db.get_user_open_topic(callback.from_user.id, "ticket")
     if existing:
-        await message.answer("⚠️ У вас уже есть открытый тикет! Дождитесь закрытия.")
+        await callback.answer("У вас уже есть открытый тикет!", show_alert=True)
         return
 
     topic_id = await create_bridge_topic(
-        bot=bot, user=message.from_user,
-        topic_name=f"Тикет — {message.from_user.first_name or message.from_user.id}",
+        bot=bot, user=callback.from_user,
+        topic_name=f"Тикет — {callback.from_user.first_name or callback.from_user.id}",
         topic_type="ticket",
         header_text="🎫 <b>Новый тикет на пересмотр</b>"
     )
     if topic_id:
-        await db.add_log(message.from_user.id, "Создал тикет", f"Topic: {topic_id}")
+        await db.add_log(callback.from_user.id, "Создал тикет", f"Topic: {topic_id}")
 
-    await message.answer(
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="tickets_cancel")],
+    ])
+    await callback.message.answer(
         "✅ <b>Тикет открыт!</b>\n"
         f"{'━' * 28}\n\n"
-        "Опишите почему ТГК должен пересмотреть оценку и рейтинг бота.\n\n"
-        "💬 Можно присылать текст, фото, файлы — всё дойдёт до админа.\n\n"
-        "<i>Тикет будет закрыт администратором после рассмотрения.</i>"
+        "Опишите, что хотите открыть. 💬 Можно присылать текст, фото, файлы.\n\n"
+        "<i>Тикет будет закрыт администратором после рассмотрения.</i>",
+        reply_markup=kb
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tickets_cancel")
+async def tickets_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    open_topic = await db.get_user_open_topic(callback.from_user.id, "ticket")
+    if open_topic:
+        await db.close_topic(open_topic['topic_id'])
+        await callback.message.answer("❌ Тикет отменён.")
+    else:
+        await callback.message.answer("❌ Отменено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tickets_mine")
+async def tickets_mine(callback: CallbackQuery):
+    tickets = await db.get_user_tickets(callback.from_user.id)
+    text = (
+        f"🎫 <b>Мои тикеты</b>\n"
+        f"{'━' * 28}\n\n"
+    )
+    rows = []
+    if not tickets:
+        text += "<i>У вас пока нет тикетов.</i>"
+    else:
+        for t in tickets:
+            if t['status'] == 'closed':
+                text += f"🔴 <b>Тикет #{t['topic_id']}</b> — Закрыт 🔴\n"
+            else:
+                text += f"🟡 <b>Тикет #{t['topic_id']}</b> — Открыт\n"
+            if t['status'] == 'open':
+                rows.append([InlineKeyboardButton(text=f"#{t['topic_id']} 👁", callback_data=f"ticket_view_{t['topic_id']}")])
+
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="tickets_menu_back")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tickets_menu_back")
+async def tickets_menu_back(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🎫 <b>Тикеты</b>\n"
+        f"{'━' * 28}\n\n"
+        "Что именно вы хотите открыть?",
+        reply_markup=tickets_menu_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ticket_view_"))
+async def ticket_view(callback: CallbackQuery):
+    try:
+        topic_id = int(callback.data.replace("ticket_view_", ""))
+    except ValueError:
+        await callback.answer()
+        return
+    info = await db.get_topic_info(topic_id)
+    if not info or info['user_id'] != callback.from_user.id:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+
+    text = (
+        f"🎫 <b>Тикет</b>\n"
+        f"{'━' * 28}\n\n"
+        f"🆔 Тикет: <code>#{topic_id}</code>\n"
+        f"📌 Статус: {'🟡 Открыт' if info['status'] == 'open' else '🔴 Закрыт'}\n"
+        f"📅 Создан: {info['created_at'] or '—'}\n"
+        f"🏁 Закрыт: {info['closed_at'] or '—'}\n\n"
+        f"<i>💬 Пишите сюда — сообщения доставятся администратору.</i>"
+    )
+    rows = []
+    if info['status'] == 'open':
+        rows.append([InlineKeyboardButton(text="➕ Дополнить", callback_data=f"ticket_add_{topic_id}")])
+        rows.append([InlineKeyboardButton(text="🔴 Закрыть тикет", callback_data=f"ticket_close_{topic_id}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="tickets_mine")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ticket_close_"))
+async def ticket_close(callback: CallbackQuery):
+    try:
+        topic_id = int(callback.data.replace("ticket_close_", ""))
+    except ValueError:
+        await callback.answer()
+        return
+    info = await db.get_topic_info(topic_id)
+    if not info or info['user_id'] != callback.from_user.id:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    if info['status'] == 'closed':
+        await callback.answer("Тикет уже закрыт", show_alert=True)
+        return
+    await db.close_topic(topic_id)
+    await callback.answer("✅ Тикет закрыт")
+    await ticket_view(callback)
+
+
+@router.callback_query(F.data.startswith("ticket_add_"))
+async def ticket_add(callback: CallbackQuery):
+    try:
+        topic_id = int(callback.data.replace("ticket_add_", ""))
+    except ValueError:
+        await callback.answer()
+        return
+    info = await db.get_topic_info(topic_id)
+    if not info or info['user_id'] != callback.from_user.id:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    if info['status'] == 'closed':
+        await callback.answer("Тикет закрыт", show_alert=True)
+        return
+    rows = []
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"ticket_view_{topic_id}")])
+    await callback.message.edit_text(
+        f"📝 <b>Дополнить тикет #{topic_id}</b>\n"
+        f"{'━' * 28}\n\n"
+        "Напишите дополнительную информацию — она попадёт к администратору в тикет.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+    await callback.answer()
 
 
 # ==================== СВЯЗЬ С АДМИНОМ ====================
@@ -935,3 +1146,36 @@ async def request_info(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
     await callback.answer("ℹ️ Уведомлён", show_alert=True)
+# ==================== ПРИВЯЗКА ТГК (бот добавлен в чат) ====================
+
+@router.my_chat_member()
+async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
+    member = update.new_chat_member
+    if member and member.user and member.user.id == bot.id:
+        # Статус участника изменился
+        if update.chat and update.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            # Бот добавлен в чат/ТГК
+            if member.is_member or member.status in ("administrator", "member"):
+                # Пробуем сохранить привязку за пользователем, который добавил бота
+                if update.from_user and not update.from_user.is_bot:
+                    await db.add_tgk_binding(
+                        update.from_user.id,
+                        update.chat.id,
+                        update.chat.title or update.chat.username or '',
+                        update.chat.username or ''
+                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=update.from_user.id,
+                            text=(
+                                "🔗 <b>ТГК привязан!</b>\n"
+                                f"{'━' * 28}\n\n"
+                                f"✅ Бот добавлен в чат <b>{update.chat.title or 'ТГК'}</b>.\n\n"
+                                "Это подтверждает владение каналом. Можете продолжить."
+                            )
+                        )
+                    except Exception:
+                        pass
+            elif not member.is_member and member.status == "left":
+                if update.from_user and not update.from_user.is_bot:
+                    await db.remove_tgk_binding(update.from_user.id, update.chat.id)

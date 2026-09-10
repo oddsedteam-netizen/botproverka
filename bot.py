@@ -8,7 +8,7 @@ from aiogram.types import TelegramObject, Message
 
 from config import BOT_TOKEN
 from database.db import init_db, register_user, increment_messages
-from handlers import admin, stats, user, bridge
+from handlers import admin, stats, user, bridge, tops
 
 
 class UserTrackingMiddleware(BaseMiddleware):
@@ -54,6 +54,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(stats.router)
     dp.include_router(user.router)
+    dp.include_router(tops.router)
     dp.include_router(bridge.router)
 
     await on_startup()

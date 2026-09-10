@@ -3,6 +3,7 @@ import aiosqlite
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
 from aiogram.enums import ChatType
 
 from config import ADMIN_ID
@@ -204,9 +205,14 @@ async def admin_to_user(message: Message, bot: Bot):
 # ==================== ПЗ → АДМИН (с поддержкой reply) ====================
 
 @router.message(F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"))
-async def user_to_admin(message: Message, bot: Bot):
+async def user_to_admin(message: Message, bot: Bot, state: FSMContext):
     # Игнорируем кнопки клавиатуры
-    if message.text in ("📝 Подать заявление", "🎫 Создать тикет", "👨‍💼 Связаться с админом", "👤 Профиль"):
+    if message.text in ("📝 Подать заявление", "🎫 Тикеты", "👨‍💼 Связаться с админом", "👤 Профиль", "🏆 Топы"):
+        return
+
+    # Во время инлайн-процессов (верификация, анкета, ввод номера проверки,
+    # выложить проверку) не пробрасываем сообщение в топик
+    if state and await state.get_state():
         return
 
     user_id = message.from_user.id

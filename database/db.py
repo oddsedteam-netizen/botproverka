@@ -25,7 +25,9 @@ async def init_db():
                 ban_reason TEXT DEFAULT '',
                 role TEXT DEFAULT 'user',
                 notes TEXT DEFAULT '',
-                linked_bot TEXT DEFAULT ''
+                linked_bot TEXT DEFAULT '',
+                is_verified INTEGER DEFAULT 0,
+                checkup_mod INTEGER DEFAULT 0
             )
         """)
 
@@ -91,6 +93,55 @@ async def init_db():
             )
         """)
 
+        # Таблица проверок (топы)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS checks (
+                check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_username TEXT DEFAULT '',
+                bot_link TEXT DEFAULT '',
+                tgk_link TEXT DEFAULT '',
+                rating TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                photos TEXT DEFAULT '[]',
+                category TEXT DEFAULT 'other',
+                tgk_title TEXT DEFAULT '',
+                passed INTEGER DEFAULT 0,
+                added_by INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT ''
+            )
+        """)
+
+        # Таблица заявок на верификацию (проверяющие)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS checker_requests (
+                req_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                tag TEXT DEFAULT '',
+                tgk_name TEXT DEFAULT '',
+                tgk_link TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT ''
+            )
+        """)
+
+        # Таблица привязок ТГК (бот добавлен в чат пользователем)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tgk_bindings (
+                binding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                chat_id INTEGER DEFAULT 0,
+                chat_title TEXT DEFAULT '',
+                username TEXT DEFAULT '',
+                bound_at TEXT DEFAULT ''
+            )
+        """)
+
+        # Проверки: внутренний ID начинается со 100
+        cur = await conn.execute("SELECT COALESCE(MAX(check_id),0) FROM checks")
+        max_check = (await cur.fetchone())[0]
+        if max_check < 100:
+            await conn.execute("DELETE FROM sqlite_sequence WHERE name='checks'")
+            await conn.execute("INSERT INTO sqlite_sequence(name,seq) VALUES('checks',?)", (99,))
         await conn.commit()
 
     # Миграция — добавляем колонку linked_bot если нет
@@ -99,6 +150,31 @@ async def init_db():
         columns = [row[1] for row in await cursor.fetchall()]
         if 'linked_bot' not in columns:
             await conn.execute("ALTER TABLE users ADD COLUMN linked_bot TEXT DEFAULT ''")
+            await conn.commit()
+        if 'is_verified' not in columns:
+            await conn.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
+            await conn.commit()
+        if 'checkup_mod' not in columns:
+            await conn.execute("ALTER TABLE users ADD COLUMN checkup_mod INTEGER DEFAULT 0")
+            await conn.commit()
+
+    # Миграция — добавляем колонку username в tgk_bindings если нет
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("PRAGMA table_info(tgk_bindings)")
+        bind_columns = [row[1] for row in await cursor.fetchall()]
+        if 'username' not in bind_columns:
+            await conn.execute("ALTER TABLE tgk_bindings ADD COLUMN username TEXT DEFAULT ''")
+            await conn.commit()
+
+    # Миграция — добавляем новые колонки в checks (tgk_title, passed) если нет
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("PRAGMA table_info(checks)")
+        check_columns = [row[1] for row in await cursor.fetchall()]
+        if 'tgk_title' not in check_columns:
+            await conn.execute("ALTER TABLE checks ADD COLUMN tgk_title TEXT DEFAULT ''")
+            await conn.commit()
+        if 'passed' not in check_columns:
+            await conn.execute("ALTER TABLE checks ADD COLUMN passed INTEGER DEFAULT 0")
             await conn.commit()
 
 
@@ -421,3 +497,260 @@ async def get_user_stats(user_id) -> dict:
         ticks = (await (await conn.execute("SELECT COUNT(*) FROM topics WHERE user_id=? AND topic_type='ticket'", (user_id,))).fetchone())[0]
         contacts = (await (await conn.execute("SELECT COUNT(*) FROM topics WHERE user_id=? AND topic_type='contact'", (user_id,))).fetchone())[0]
         return {"requests": reqs, "tickets": ticks, "contacts": contacts}
+
+
+# ==================== ВЕРИФИКАЦИЯ (ПРОВЕРЯЮЩИЕ) ====================
+
+async def set_user_verified(user_id: int, val: bool):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE users SET is_verified=? WHERE user_id=?", (1 if val else 0, user_id))
+        await conn.commit()
+
+
+async def set_checkup_mod(user_id: int, val: bool):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE users SET checkup_mod=? WHERE user_id=?", (1 if val else 0, user_id))
+        await conn.commit()
+
+
+async def create_checker_request(user_id, tag, tgk_name, tgk_link) -> int:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO checker_requests (user_id,tag,tgk_name,tgk_link,status,created_at) VALUES (?,?,?,?,'pending',?)",
+            (user_id, tag, tgk_name, tgk_link, now)
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_checker_request_by_user(user_id) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute("SELECT * FROM checker_requests WHERE user_id=? AND status='pending'", (user_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_checker_request_by_id(req_id) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute("SELECT * FROM checker_requests WHERE req_id=?", (req_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def update_checker_request_status(req_id, status):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE checker_requests SET status=? WHERE req_id=?", (status, req_id))
+        await conn.commit()
+
+
+# ==================== ПРОВЕРКИ (ТОПЫ) ====================
+
+async def create_check(bot_username, bot_link, tgk_link, tgk_title, rating, description, photos, category, added_by, passed=0) -> int:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO checks (bot_username,bot_link,tgk_link,tgk_title,rating,description,photos,category,passed,added_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (bot_username, bot_link, tgk_link, tgk_title or '', rating, description, photos, category, 1 if passed else 0, added_by, now)
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def get_checks(category=None, limit=100) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        q = "SELECT * FROM checks WHERE 1=1"
+        params = []
+        if category:
+            q += " AND category=?"
+            params.append(category)
+        q += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await conn.execute(q, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_bots_summary(category) -> list[dict]:
+    """Список ботов в категории с количеством проверок, отсортированный по убыванию."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT bot_username, MAX(check_id) as last_check_id, COUNT(check_id) as cnt "
+            "FROM checks WHERE category=? GROUP BY bot_username ORDER BY cnt DESC",
+            (category,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_checks_by_bot(bot_username, category) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM checks WHERE bot_username=? AND category=? ORDER BY created_at ASC",
+            (bot_username, category)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_check_by_id(check_id) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute("SELECT * FROM checks WHERE check_id=?", (check_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+async def delete_check_by_id(check_id) -> bool:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("DELETE FROM checks WHERE check_id=?", (check_id,))
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_user_tgk_check(user_id) -> dict | None:
+    """Возвращает ТГК проверяющего, привязанный при верификации (approved)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT tgk_name, tgk_link FROM checker_requests "
+            "WHERE user_id=? AND status='approved' ORDER BY req_id DESC LIMIT 1",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_tgk_rating(limit: int = 30) -> list[dict]:
+    """Рейтинг проверяющих ТГК по количеству проверок (топ до заданного лимита).
+
+    Для каждого ТГК считает всего проверок и сколько из них бот прошёл (passed=1).
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT tgk_link, MAX(tgk_title) AS tgk_title, "
+            "COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN passed=1 THEN 1 ELSE 0 END), 0) AS passed "
+            "FROM checks WHERE tgk_link <> '' "
+            "GROUP BY tgk_link ORDER BY total DESC, tgk_link ASC LIMIT ?",
+            (int(limit),)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_checks_by_tgk_link(tgk_link: str, limit: int = 100) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM checks WHERE tgk_link=? ORDER BY created_at DESC LIMIT ?",
+            (tgk_link, int(limit))
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+# ==================== ПРИВЯЗКА ТГК (бот добавлен в чат) ====================
+
+async def add_tgk_binding(user_id: int, chat_id: int, chat_title: str, chat_username: str = ''):
+    """Добавляет/обновляет привязку ТГК для пользователя.
+
+    Позволяет хранить несколько ТГК за одним пользователем. Если такой чат уже
+    привязан — обновляет его, иначе вставляет новую запись (старые не удаляются).
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            "SELECT binding_id FROM tgk_bindings WHERE user_id=? AND chat_id=?",
+            (user_id, chat_id)
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            await conn.execute(
+                "UPDATE tgk_bindings SET chat_title=?, username=?, bound_at=? WHERE binding_id=?",
+                (chat_title or '', chat_username or '', now, existing[0])
+            )
+        else:
+            await conn.execute(
+                "INSERT INTO tgk_bindings (user_id,chat_id,chat_title,username,bound_at) VALUES (?,?,?,?,?)",
+                (user_id, chat_id, chat_title or '', chat_username or '', now)
+            )
+        await conn.commit()
+
+
+async def get_all_user_tgk_bindings(user_id: int) -> list[dict]:
+    """Все привязанные ТГК пользователя (бот добавлен в несколько каналов)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM tgk_bindings WHERE user_id=? ORDER BY bound_at DESC",
+            (user_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_user_tgk_binding(user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM tgk_bindings WHERE user_id=? ORDER BY binding_id DESC LIMIT 1", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def remove_tgk_binding(user_id: int, chat_id: int | None = None):
+    """Удаляет привязку ТГК. Если передан chat_id — только эту, иначе все для юзера."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        if chat_id is not None:
+            await conn.execute(
+                "DELETE FROM tgk_bindings WHERE user_id=? AND chat_id=?",
+                (user_id, chat_id)
+            )
+        else:
+            await conn.execute("DELETE FROM tgk_bindings WHERE user_id=?", (user_id,))
+        await conn.commit()
+
+
+async def unverify_user(user_id: int):
+    """Полностью снимает верификацию: убирает флаг, отзывает утверждённую заявку
+    и отвязывает бота от всех ТГК пользователя."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
+        await conn.execute(
+            "UPDATE checker_requests SET status='revoked' WHERE user_id=? AND status='approved'",
+            (user_id,)
+        )
+        await conn.execute("DELETE FROM tgk_bindings WHERE user_id=?", (user_id,))
+        await conn.commit()
+
+
+# ==================== МОДЕРАТОРЫ CHECK-UP ====================
+
+async def get_checkup_moderators() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM users WHERE checkup_mod=1 ORDER BY join_date DESC"
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_checks_by_moderator(user_id: int) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM checks WHERE added_by=? ORDER BY created_at DESC", (user_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+# ==================== ТИКЕТЫ ПОЛЬЗОВАТЕЛЯ ====================
+
+async def get_user_tickets(user_id: int) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM topics WHERE user_id=? AND topic_type='ticket' ORDER BY created_at DESC",
+            (user_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]

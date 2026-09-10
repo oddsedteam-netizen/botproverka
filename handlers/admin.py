@@ -28,6 +28,10 @@ class BroadcastState(StatesGroup):
     confirm = State()
 
 
+class DeleteCheckState(StatesGroup):
+    waiting_id = State()
+
+
 # ==================== ПРОВЕРКА ====================
 
 def is_admin(user_id: int) -> bool:
@@ -42,6 +46,8 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔄 Тикеты на пересмотр", callback_data="admin_tickets")],
         [InlineKeyboardButton(text="📝 Заявки на проверку", callback_data="admin_requests")],
         [InlineKeyboardButton(text="📌 ПЗ бота", callback_data="admin_pz")],
+        [InlineKeyboardButton(text="🛡 Модеры", callback_data="admin_mods")],
+        [InlineKeyboardButton(text="🗑 Удалить проверку", callback_data="admin_del_check")],
         [InlineKeyboardButton(text="⚙️ Редактор бота", callback_data="admin_editor")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🛡 Антиспам", callback_data="admin_antispam")],
@@ -650,3 +656,171 @@ async def shutdown_toggle(callback: CallbackQuery, bot: Bot):
         reply_markup=kb
     )
     await callback.answer(f"Бот {'отключен' if new_val == 'off' else 'включен'}")
+# ==================== МОДЕРАТОР CHECK-UP ====================
+
+async def _set_mod(message: Message, bot: Bot, val: bool):
+    """Назначить (val=True) / снять (val=False) модератора check-up."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].lstrip('-').isdigit():
+        await message.answer("❌ Использование: <code>/moder &lt;user_id&gt;</code>")
+        return
+    user_id = int(parts[1])
+    user = await db.get_user(user_id)
+    if not user:
+        await message.answer("❌ Пользователь не найден.")
+        return
+    await db.set_checkup_mod(user_id, val)
+    await db.add_log(ADMIN_ID, f"{'Назначил' if val else 'Снял'} модератора check-up", f"ID: {user_id}")
+    await message.answer(
+        f"{'✅' if val else '❌'} <b>Модератор check-up {'назначен' if val else 'снят'}</b>\n"
+        f"🆔 <code>{user_id}</code>"
+    )
+    try:
+        text = (
+            "🛡 <b>Вы назначены модератором check-up!</b>\n"
+            f"{'━' * 28}\n\n"
+            "В вашем профиле появилась кнопка «📤 Добавить проверку»."
+            if val else
+            "ℹ️ <b>С вас снят статус модератора check-up.</b>\nВы больше не можете добавлять проверки check-up."
+        )
+        await bot.send_message(chat_id=user_id, text=text)
+    except Exception:
+        pass
+
+
+@router.message(Command("moder"))
+async def cmd_moder(message: Message, bot: Bot):
+    """Назначить модератора check-up. Использование: /moder <user_id>"""
+    await _set_mod(message, bot, True)
+
+
+@router.message(Command("nomoder"))
+async def cmd_nomodder(message: Message, bot: Bot):
+    """Снять модератора check-up. Использование: /nomoder <user_id>"""
+    await _set_mod(message, bot, False)
+# ==================== МОДЕРЫ (список) ====================
+
+@router.callback_query(F.data == "admin_mods")
+async def admin_mods(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    mods = await db.get_checkup_moderators()
+    text = f"🛡 <b>Модераторы check-up</b>\n{'━' * 28}\n\n"
+    rows = []
+    if not mods:
+        text += "<i>Нет модераторов.</i>"
+    else:
+        for m in mods:
+            name = f"{m['first_name']} {m['last_name']}".strip() or m['username'] or str(m['user_id'])
+            nick = f"@{m['username']}" if m['username'] else "—"
+            text += f"👤 <b>{name}</b>\n   📛 {nick} | 🆔 <code>{m['user_id']}</code>\n\n"
+            rows.append([InlineKeyboardButton(
+                text=f"👤 {name}",
+                callback_data=f"mod_detail_{m['user_id']}"
+            )])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_admin")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mod_detail_"))
+async def mod_detail(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.replace("mod_detail_", ""))
+    user = await db.get_user(user_id)
+    if not user:
+        await callback.answer("Не найден", show_alert=True)
+        return
+    checks = await db.get_checks_by_moderator(user_id)
+    name = f"{user['first_name']} {user['last_name']}".strip() or user['username'] or str(user_id)
+    nick = f"@{user['username']}" if user['username'] else "—"
+    text = (
+        f"🛡 <b>Карточка модератора</b>\n{'━' * 28}\n\n"
+        f"👤 <b>{name}</b>\n"
+        f"📛 {nick}\n"
+        f"🆔 <code>{user_id}</code>\n"
+        f"📅 Регистрация: {user['join_date'][:10] if user['join_date'] else '—'}\n\n"
+        f"📤 <b>Список проверок ({len(checks)}):</b>\n"
+    )
+    if checks:
+        for ch in checks[:10]:
+            bot = f"@{ch['bot_username']}" if ch.get('bot_username') else f"#{ch['check_id']}"
+            text += f"   🔍 {bot} (ID: <code>{ch['check_id']}</code>) | {ch['category']}\n"
+    else:
+        text += "   <i>Проверок нет</i>\n"
+    rows = [
+        [InlineKeyboardButton(text="🛡 Снять модера", callback_data=f"mod_remove_{user_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mods")],
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mod_remove_"))
+async def mod_remove(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.replace("mod_remove_", ""))
+    await db.set_checkup_mod(user_id, False)
+    await db.add_log(ADMIN_ID, "Снял модератора check-up", f"ID: {user_id}")
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="ℹ️ <b>С вас снят статус модератора check-up.</b>\nВы больше не можете добавлять проверки check-up."
+        )
+    except Exception:
+        pass
+    await callback.answer("✅ Снят")
+    await admin_mods(callback)
+
+
+# ==================== УДАЛЕНИЕ ПРОВЕРКИ ====================
+
+@router.callback_query(F.data == "admin_del_check")
+async def admin_del_check(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.set_state(DeleteCheckState.waiting_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text(
+        "🗑 <b>Удаление проверки</b>\n"
+        f"{'━' * 28}\n\n"
+        "Отправьте <b>ID проверки</b>, который нужно удалить.\n\n"
+        "<i>Проверка будет удалена из топов, других ТГК и проверок check-up.</i>",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.message(DeleteCheckState.waiting_id)
+async def process_del_check(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if message.text == "/cancel" or message.text == "◀️ Назад":
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("❌ Отправьте числовой ID проверки.")
+        return
+    check_id = int(raw)
+    check = await db.get_check_by_id(check_id)
+    if not check:
+        await message.answer(f"❌ Проверка с ID <code>{check_id}</code> не найдена.")
+        return
+    await db.delete_check_by_id(check_id)
+    await db.add_log(ADMIN_ID, "Удалил проверку", f"ID: {check_id}")
+    await state.clear()
+    await message.answer(
+        f"✅ <b>Проверка удалена</b> 🗑\n"
+        f"🆔 <code>{check_id}</code>\n"
+        f"🤖 @{check.get('bot_username') or '—'}\n"
+        f"📂 Категория: {check.get('category') or '—'}\n\n"
+        f"Она удалена из топов, других ТГК и проверок check-up."
+    )

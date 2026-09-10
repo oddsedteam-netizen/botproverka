@@ -10,8 +10,15 @@ from aiogram.types import TelegramObject, Message
 from database.db import init_db, register_user, increment_messages
 from handlers import admin, stats, user, bridge, tops
 
-# Настройки читаются из переменных окружения (без файла config.py)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8432991209:AAHz57v4Yc4pSrr0NeK24cK5hMWA70rhiWE")
+# Токен берётся ТОЛЬКО из переменной окружения сервера.
+# Запасного значения в коде НЕТ — чтобы случайно не запустить другого бота.
+# Если токен не задан, бот останавливается с понятной ошибкой.
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "Ошибка конфигурации: переменная окружения BOT_TOKEN не задана. "
+        "Задайте её на сервере (ботхост/хостинг) и перезапустите бота."
+    )
 
 
 class UserTrackingMiddleware(BaseMiddleware):

@@ -10,7 +10,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ChatMemberStatus
 
 from database import db
 
@@ -1158,7 +1158,14 @@ async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
         # Статус участника изменился
         if update.chat and update.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             # Бот добавлен в чат/ТГК
-            if member.is_member or member.status in ("administrator", "member"):
+            active_statuses = (
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                getattr(ChatMemberStatus, "CREATOR", None),
+                getattr(ChatMemberStatus, "OWNER", None),
+            )
+            active_statuses = tuple(s for s in active_statuses if s is not None)
+            if member.status in active_statuses:
                 # Пробуем сохранить привязку за пользователем, который добавил бота
                 if update.from_user and not update.from_user.is_bot:
                     await db.add_tgk_binding(
@@ -1179,6 +1186,6 @@ async def on_my_chat_member(update: ChatMemberUpdated, bot: Bot):
                         )
                     except Exception:
                         pass
-            elif not member.is_member and member.status == "left":
+            elif member.status == ChatMemberStatus.LEFT:
                 if update.from_user and not update.from_user.is_bot:
                     await db.remove_tgk_binding(update.from_user.id, update.chat.id)

@@ -1,5 +1,6 @@
 import html
 import json
+import os
 import aiosqlite
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -11,8 +12,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatType
 
-from config import ADMIN_ID, TGK_LINK
 from database import db
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1269379743"))
+TGK_LINK = os.getenv("TGK_LINK", "https://t.me/Checking_the_angel")
 
 router = Router()
 

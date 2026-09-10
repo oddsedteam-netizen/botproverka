@@ -1,14 +1,17 @@
 import asyncio
 import logging
+import os
 from typing import Callable, Dict, Any, Awaitable
 from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import TelegramObject, Message
 
-from config import BOT_TOKEN
 from database.db import init_db, register_user, increment_messages
 from handlers import admin, stats, user, bridge, tops
+
+# Настройки читаются из переменных окружения (без файла config.py)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8432991209:AAHz57v4Yc4pSrr0NeK24cK5hMWA70rhiWE")
 
 
 class UserTrackingMiddleware(BaseMiddleware):

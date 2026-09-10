@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import (
@@ -10,8 +11,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatType
 
-from config import ADMIN_ID
 from database import db
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1269379743"))
 
 router = Router()
 

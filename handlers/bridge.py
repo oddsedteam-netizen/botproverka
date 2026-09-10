@@ -1,4 +1,5 @@
 import time
+import os
 import aiosqlite
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -6,8 +7,9 @@ from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ChatType
 
-from config import ADMIN_ID
 from database import db
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1269379743"))
 
 router = Router()
 

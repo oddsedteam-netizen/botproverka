@@ -1,11 +1,13 @@
+import os
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_ID
 from database import db
 from datetime import datetime
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1269379743"))
 
 router = Router()
 

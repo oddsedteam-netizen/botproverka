@@ -17,7 +17,7 @@ Telegram-бот для проверки других ботов с админ-п
 
 1. Клонировать репозиторий
 2. Установить зависимости: `pip install -r requirements.txt`
-3. Настроить `config.py` (токен и ID админа)
+3. Задать переменные окружения: `BOT_TOKEN`, `ADMIN_ID`, `TGK_LINK` (токен и ID админа)
 4. Запустить: `python bot.py`
 
 Или через `start.bat` (Windows).

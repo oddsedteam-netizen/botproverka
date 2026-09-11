@@ -166,6 +166,14 @@ async def init_db():
             await conn.execute("ALTER TABLE tgk_bindings ADD COLUMN username TEXT DEFAULT ''")
             await conn.commit()
 
+    # Миграция — добавляем колонку category в topics если нет
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("PRAGMA table_info(topics)")
+        topic_columns = [row[1] for row in await cursor.fetchall()]
+        if 'category' not in topic_columns:
+            await conn.execute("ALTER TABLE topics ADD COLUMN category TEXT DEFAULT ''")
+            await conn.commit()
+
     # Миграция — добавляем новые колонки в checks (tgk_title, passed) если нет
     async with aiosqlite.connect(DB_PATH) as conn:
         cursor = await conn.execute("PRAGMA table_info(checks)")
@@ -376,11 +384,11 @@ async def get_all_requests(status=None) -> list[dict]:
 
 # ==================== ТОПИКИ ====================
 
-async def create_topic_link(topic_id, user_id, topic_type):
+async def create_topic_link(topic_id, user_id, topic_type, category=""):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("INSERT OR REPLACE INTO topics (topic_id,user_id,topic_type,status,created_at) VALUES (?,?,?,'open',?)",
-                           (topic_id, user_id, topic_type, now))
+        await conn.execute("INSERT OR REPLACE INTO topics (topic_id,user_id,topic_type,status,created_at,category) VALUES (?,?,?,'open',?,?)",
+                           (topic_id, user_id, topic_type, now, category))
         await conn.commit()
 
 

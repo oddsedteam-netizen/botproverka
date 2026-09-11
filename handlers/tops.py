@@ -961,6 +961,10 @@ async def post_step_start(callback: CallbackQuery, state: FSMContext):
         "Когда закончите — нажмите кнопку «Готово»."
     )
     await callback.message.edit_text(form_text, reply_markup=post_check_kb(0))
+    await state.update_data(
+        _photo_chat_id=callback.message.chat.id,
+        _photo_msg_id=callback.message.message_id,
+    )
     await callback.answer()
 
 
@@ -977,13 +981,36 @@ async def profile_post_checkup(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(PostCheckState.waiting_photos, F.chat.type == ChatType.PRIVATE)
-async def post_collect_photo(message: Message, state: FSMContext):
+async def post_collect_photo(message: Message, state: FSMContext, bot: Bot):
     if message.photo:
         data = await state.get_data()
         photos = list(data.get('photos') or [])
         photos.append(message.photo[-1].file_id)
         await state.update_data(photos=photos)
-        await message.answer(f"📸 Принято! Фото: {len(photos)}. Отправьте ещё или нажмите «Готово».")
+
+        chat_id = data.get('_photo_chat_id')
+        msg_id = data.get('_photo_msg_id')
+        status_text = (
+            "🖼 <b>Этап 1 из 5 — Фото</b>\n"
+            f"{'━' * 28}\n\n"
+            f"📸 <b>Принято фото: {len(photos)}</b>\n"
+            "Отправьте ещё фото или нажмите кнопку «Готово»."
+        )
+        if chat_id and msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=status_text,
+                    reply_markup=post_check_kb(len(photos))
+                )
+                return
+            except Exception:
+                pass
+        # Фолбэк, если редактируемое сообщение недоступно
+        await message.answer(
+            f"📸 Принято фото: {len(photos)}. Отправьте ещё или нажмите «Готово»."
+        )
 
 
 @router.callback_query(F.data == "post_details_done", PostCheckState.waiting_photos)

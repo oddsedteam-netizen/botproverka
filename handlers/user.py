@@ -45,9 +45,8 @@ class LinkBotState(StatesGroup):
 def main_user_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📝 Подать заявление"), KeyboardButton(text="🎫 Тикеты")],
-            [KeyboardButton(text="👨‍💼 Связаться с админом"), KeyboardButton(text="👤 Профиль")],
-            [KeyboardButton(text="🏆 Топы")],
+            [KeyboardButton(text="📝 Заявка на проверку"), KeyboardButton(text="🎫 Тикеты")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Топы")],
         ],
         resize_keyboard=True,
         is_persistent=True
@@ -238,9 +237,8 @@ async def cmd_start(message: Message, state: FSMContext):
         welcome = (
             "👋 <b>Добро пожаловать!</b>\n\n"
             "Это бот проверки. Здесь вы можете:\n"
-            "• 📝 Подать заявление на проверку бота\n"
+            "• 📝 Заявка на проверку бота\n"
             "• 🎫 Тикеты\n"
-            "• 👨‍💼 Связаться с админом\n"
             "• 👤 Посмотреть свой профиль\n\n"
             "<i>Текст приветствия — заглушка. Настраивается в редакторе.</i>"
         )
@@ -626,13 +624,18 @@ async def quick_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 # ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ СОЗДАНИЯ ТОПИКА ====================
 
-async def create_bridge_topic(bot: Bot, user, topic_name: str, topic_type: str, header_text: str) -> int | None:
+async def create_bridge_topic(bot: Bot, user, topic_name: str, topic_type: str, header_text: str, category: str = "") -> int | None:
     super_chat_id = await db.get_super_chat_id()
     user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Без имени"
     username_display = f"@{user.username}" if user.username else "нет"
 
+    category_line = ""
+    if category:
+        category_line = f"📂 <b>Категория:</b> {category}\n\n"
+
     full_header = (
         f"{header_text}\n{'━' * 28}\n\n"
+        f"{category_line}"
         f"<b>👤 ПЗ:</b>\n"
         f"   🆔 <code>{user.id}</code>\n"
         f"   👤 {user_name}\n"
@@ -650,7 +653,7 @@ async def create_bridge_topic(bot: Bot, user, topic_name: str, topic_type: str, 
     try:
         forum_topic = await bot.create_forum_topic(chat_id=super_chat_id, name=topic_name)
         tid = forum_topic.message_thread_id
-        await db.create_topic_link(tid, user.id, topic_type)
+        await db.create_topic_link(tid, user.id, topic_type, category)
         await bot.send_message(chat_id=super_chat_id, message_thread_id=tid, text=full_header)
         return tid
     except Exception as e:
@@ -662,6 +665,12 @@ async def create_bridge_topic(bot: Bot, user, topic_name: str, topic_type: str, 
 
 
 # ==================== ТИКЕТЫ ====================
+
+TICKET_CATEGORIES = {
+    "contact": {"text": "Связаться с админом", "btn": "👨‍💼 Связаться с админом"},
+    "review": {"text": "Подать на пересмотр оценки", "btn": "📝 Подать на пересмотр оценки"},
+    "complaint": {"text": "Оставить жалобу", "btn": "⚠️ Оставить жалобу"},
+}
 
 def tickets_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -684,18 +693,56 @@ async def tickets_menu(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data == "tickets_open")
-async def tickets_open(callback: CallbackQuery, bot: Bot, state: FSMContext):
+async def tickets_open(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     existing = await db.get_user_open_topic(callback.from_user.id, "ticket")
     if existing:
         await callback.answer("У вас уже есть открытый тикет!", show_alert=True)
         return
 
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=c["btn"], callback_data=f"ticket_cat_{key}")]
+        for key, c in TICKET_CATEGORIES.items()
+    ] + [
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="tickets_menu_back")],
+    ])
+    await callback.message.edit_text(
+        "📂 <b>Выберите категорию обращения</b>\n"
+        f"{'━' * 28}\n\n"
+        "Выберите, к какой категории относится ваше обращение:",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ticket_cat_"))
+async def tickets_create_by_cat(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    await state.clear()
+    cat_key = callback.data.replace("ticket_cat_", "")
+    cat_info = TICKET_CATEGORIES.get(cat_key)
+    if not cat_info:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+    cat_name = cat_info["text"]
+
+    existing = await db.get_user_open_topic(callback.from_user.id, "ticket")
+    if existing:
+        await callback.answer("У вас уже есть открытый тикет!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "🎫 <b>Создание тикета</b>\n"
+        f"{'━' * 28}\n\n"
+        f"📂 Категория: <b>{cat_name}</b>\n"
+        "⏳ Открываем тикет..."
+    )
+
     topic_id = await create_bridge_topic(
         bot=bot, user=callback.from_user,
-        topic_name=f"Тикет — {callback.from_user.first_name or callback.from_user.id}",
+        topic_name=f"Тикет — {cat_name} — {callback.from_user.first_name or callback.from_user.id}",
         topic_type="ticket",
-        header_text="🎫 <b>Новый тикет на пересмотр</b>"
+        header_text="🎫 <b>Новый тикет</b>",
+        category=cat_name
     )
     if topic_id:
         await db.add_log(callback.from_user.id, "Создал тикет", f"Topic: {topic_id}")
@@ -706,7 +753,8 @@ async def tickets_open(callback: CallbackQuery, bot: Bot, state: FSMContext):
     await callback.message.answer(
         "✅ <b>Тикет открыт!</b>\n"
         f"{'━' * 28}\n\n"
-        "Опишите, что хотите открыть. 💬 Можно присылать текст, фото, файлы.\n\n"
+        f"📂 Категория: <b>{cat_name}</b>\n\n"
+        "Опишите, что хотите. 💬 Можно присылать текст, фото, файлы.\n\n"
         "<i>Тикет будет закрыт администратором после рассмотрения.</i>",
         reply_markup=kb
     )
@@ -776,6 +824,7 @@ async def ticket_view(callback: CallbackQuery):
         f"🎫 <b>Тикет</b>\n"
         f"{'━' * 28}\n\n"
         f"🆔 Тикет: <code>#{topic_id}</code>\n"
+        f"📂 Категория: {info.get('category') or '—'}\n"
         f"📌 Статус: {'🟡 Открыт' if info['status'] == 'open' else '🔴 Закрыт'}\n"
         f"📅 Создан: {info['created_at'] or '—'}\n"
         f"🏁 Закрыт: {info['closed_at'] or '—'}\n\n"
@@ -834,39 +883,9 @@ async def ticket_add(callback: CallbackQuery):
     await callback.answer()
 
 
-# ==================== СВЯЗЬ С АДМИНОМ ====================
-
-@router.message(F.text == "👨‍💼 Связаться с админом", F.chat.type == ChatType.PRIVATE)
-async def contact_admin(message: Message, bot: Bot, state: FSMContext):
-    if not await check_access(message):
-        return
-    await state.clear()
-
-    existing = await db.get_user_open_topic(message.from_user.id, "contact")
-    if existing:
-        await message.answer("⚠️ У вас уже открыта переписка с админом! Продолжайте писать.")
-        return
-
-    topic_id = await create_bridge_topic(
-        bot=bot, user=message.from_user,
-        topic_name=f"Связь — {message.from_user.first_name or message.from_user.id}",
-        topic_type="contact",
-        header_text="👨‍💼 <b>Обращение к админу</b>"
-    )
-    if topic_id:
-        await db.add_log(message.from_user.id, "Связался с админом", f"Topic: {topic_id}")
-
-    await message.answer(
-        "✅ <b>Обращение отправлено!</b>\n"
-        f"{'━' * 28}\n\n"
-        "Админ скоро напишет.\n"
-        "💬 Можете уже описать свой вопрос."
-    )
-
-
 # ==================== ПОДАТЬ ЗАЯВЛЕНИЕ (полная форма) ====================
 
-@router.message(F.text == "📝 Подать заявление", F.chat.type == ChatType.PRIVATE)
+@router.message(F.text == "📝 Заявка на проверку", F.chat.type == ChatType.PRIVATE)
 async def start_verification(message: Message, state: FSMContext):
     if not await check_access(message):
         return

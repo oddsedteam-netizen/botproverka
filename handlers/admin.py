@@ -44,16 +44,27 @@ def is_admin(user_id: int) -> bool:
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🔄 Тикеты на пересмотр", callback_data="admin_tickets")],
-        [InlineKeyboardButton(text="📝 Заявки на проверку", callback_data="admin_requests")],
-        [InlineKeyboardButton(text="📌 ПЗ бота", callback_data="admin_pz")],
-        [InlineKeyboardButton(text="🛡 Модеры", callback_data="admin_mods")],
-        [InlineKeyboardButton(text="🗑 Удалить проверку", callback_data="admin_del_check")],
-        [InlineKeyboardButton(text="⚙️ Редактор бота", callback_data="admin_editor")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="🛡 Антиспам", callback_data="admin_antispam")],
-        [InlineKeyboardButton(text="🔴 Отключить бота", callback_data="admin_shutdown")],
+        [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
+            InlineKeyboardButton(text="🔄 Тикеты", callback_data="admin_tickets"),
+        ],
+        [
+            InlineKeyboardButton(text="📝 Заявки", callback_data="admin_requests"),
+            InlineKeyboardButton(text="📌 ПЗ бота", callback_data="admin_pz"),
+        ],
+        [
+            InlineKeyboardButton(text="🛡 Модеры", callback_data="admin_mods"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data="admin_del_check"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Редактор", callback_data="admin_editor"),
+            InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"),
+        ],
+        [
+            InlineKeyboardButton(text="🛡 Антиспам", callback_data="admin_antispam"),
+            InlineKeyboardButton(text="🔴 Отключить бота", callback_data="admin_shutdown"),
+        ],
+        [InlineKeyboardButton(text="📜 Команды", callback_data="admin_cmds")],
     ])
 
 
@@ -75,6 +86,39 @@ async def back_to_admin(callback: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await callback.message.edit_text(get_admin_text(), reply_markup=get_admin_keyboard())
+    await callback.answer()
+
+
+# ==================== КОМАНДЫ БОТА ====================
+
+COMMANDS_TEXT = (
+    "📜 <b>Команды бота</b>\n"
+    f"{'━' * 28}\n\n"
+    "<b>Для всех:</b>\n"
+    "/start — приветствие и регистрация\n\n"
+    "<b>Для админа:</b>\n"
+    "/admin — открыть админ-панель\n"
+    "/connect — подключить суперчат\n"
+    "/disconnect — отключить суперчат\n"
+    "/chatinfo — информация о чате\n"
+    "/moder &lt;id&gt; — назначить модератора check-up\n"
+    "/nomoder &lt;id&gt; — снять модератора check-up\n\n"
+    "<b>В топике суперчата (админ):</b>\n"
+    "/ban — забанить пользователя в топике ПЗ\n"
+    "/unban — разбанить пользователя в топике ПЗ\n"
+    "/close — закрыть тикет\n\n"
+    "<i>/cancel — отмена текущего действия в активных формах</i>"
+)
+
+
+@router.callback_query(F.data == "admin_cmds")
+async def admin_cmds(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text(COMMANDS_TEXT, reply_markup=kb)
     await callback.answer()
 
 
@@ -101,7 +145,9 @@ async def admin_tickets(callback: CallbackQuery):
             user = await db.get_user(t['user_id'])
             name = user['first_name'] if user else str(t['user_id'])
             status_icon = "🟡" if t['status'] == 'open' else "⚪"
-            text += f"{status_icon} <b>Тикет</b> | {name} | {t['status']}\n"
+            cat = t.get('category') or ''
+            cat_suffix = f" | <b>{cat}</b>" if cat else ""
+            text += f"{status_icon} <b>Тикет</b> | {name} | {t['status']}{cat_suffix}\n"
 
             if super_chat_id != 0:
                 link = f"https://t.me/c/{str(super_chat_id)[4:]}/{t['topic_id']}"

@@ -3,7 +3,7 @@ import os
 import aiosqlite
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ChatType
 
@@ -200,6 +200,22 @@ async def admin_to_user(message: Message, bot: Bot):
         )
         # Сохраняем маппинг: сообщение в топике → сообщение в ЛС
         _message_map_topic_to_dm[(message.chat.id, message.message_id)] = sent.message_id
+
+        # Плашка «Ответ в тикет!» с кнопкой на тикет (только для тикетов)
+        if topic_info['topic_type'] == 'ticket':
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="📩 <b>Ответ в тикет!</b>",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text=f"🎫 Тикет #{topic_info['topic_id']}",
+                            callback_data=f"ticket_view_{topic_info['topic_id']}"
+                        )]
+                    ])
+                )
+            except Exception:
+                pass
     except Exception as e:
         await message.reply(f"❌ Не доставлено: <code>{e}</code>")
 
@@ -209,7 +225,7 @@ async def admin_to_user(message: Message, bot: Bot):
 @router.message(F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"))
 async def user_to_admin(message: Message, bot: Bot, state: FSMContext):
     # Игнорируем кнопки клавиатуры
-    if message.text in ("📝 Подать заявление", "🎫 Тикеты", "👨‍💼 Связаться с админом", "👤 Профиль", "🏆 Топы"):
+    if message.text in ("📝 Заявка на проверку", "🎫 Тикеты", "👤 Профиль", "🏆 Топы"):
         return
 
     # Во время инлайн-процессов (верификация, анкета, ввод номера проверки,
